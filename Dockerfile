@@ -7,16 +7,20 @@ ARG MOCKGEN_VERSION=v1.6.0
 
 FROM --platform=${BUILDPLATFORM} qmcgaw/xcputranslate:${XCPUTRANSLATE_VERSION} AS xcputranslate
 # FROM --platform=${BUILDPLATFORM} golangci/golangci-lint:${GOLANGCI_LINT_VERSION}-apline AS golangci-lint
-FROM --platform=${BUILDPLATFORM} qmcgaw/binpot:mockgen-${MOCKGEN_VERSION} AS mockgen
+# FROM --platform=${BUILDPLATFORM} qmcgaw/binpot:mockgen-${MOCKGEN_VERSION} AS mockgen
 
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS base
+FROM public.ecr.aws/docker/library/golang:1.24-alpine3.23 AS base
+# FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS base
 WORKDIR /tmp/gobuild
 ENV CGO_ENABLED=0
 # Note: findutils needed to have xargs support `-d` flag for mocks stage.
-RUN apk --update add git g++ findutils golangci-lint
+RUN apk --update add git g++ findutils \
+    && go install github.com/golang/mock/mockgen@$MOCKGEN_VERSION \
+    && go install github.com/golangci/golangci-lint@$GOLANGCI_LINT_VERSION \
+    && exit 0
 COPY --from=xcputranslate /xcputranslate /usr/local/bin/xcputranslate
 # COPY --from=golangci-lint /bin /go/bin/golangci-lint
-COPY --from=mockgen /bin /go/bin/mockgen
+# COPY --from=mockgen /bin /go/bin/mockgen
 # Copy repository code and install Go dependencies
 COPY go.mod go.sum ./
 RUN go mod download
