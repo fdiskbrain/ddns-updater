@@ -1,21 +1,21 @@
 ARG BUILDPLATFORM=linux/amd64
-ARG ALPINE_VERSION=3.20
+ARG ALPINE_VERSION=3.23
 ARG GO_VERSION=1.24
 ARG XCPUTRANSLATE_VERSION=v0.6.0
 ARG GOLANGCI_LINT_VERSION=v1.64.8
 ARG MOCKGEN_VERSION=v1.6.0
 
 FROM --platform=${BUILDPLATFORM} qmcgaw/xcputranslate:${XCPUTRANSLATE_VERSION} AS xcputranslate
-FROM --platform=${BUILDPLATFORM} golangci/golangci-lint:${GOLANGCI_LINT_VERSION}-apline AS golangci-lint
+# FROM --platform=${BUILDPLATFORM} golangci/golangci-lint:${GOLANGCI_LINT_VERSION}-apline AS golangci-lint
 FROM --platform=${BUILDPLATFORM} qmcgaw/binpot:mockgen-${MOCKGEN_VERSION} AS mockgen
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS base
 WORKDIR /tmp/gobuild
 ENV CGO_ENABLED=0
 # Note: findutils needed to have xargs support `-d` flag for mocks stage.
-RUN apk --update add git g++ findutils
+RUN apk --update add git g++ findutils golangci-lint
 COPY --from=xcputranslate /xcputranslate /usr/local/bin/xcputranslate
-COPY --from=golangci-lint /bin /go/bin/golangci-lint
+# COPY --from=golangci-lint /bin /go/bin/golangci-lint
 COPY --from=mockgen /bin /go/bin/mockgen
 # Copy repository code and install Go dependencies
 COPY go.mod go.sum ./
