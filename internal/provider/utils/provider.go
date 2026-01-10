@@ -10,6 +10,6 @@ import (
 // 		string(provider) + " | ip: " + ipVersion.String() + "]"
 // }
 
-func ToString(domain, owner string, provider models.Provider, ipVersion ipversion.IPVersion) string {
+func ToString(_, _ string, provider models.Provider, _ ipversion.IPVersion) string {
 	return string(provider)
 }
