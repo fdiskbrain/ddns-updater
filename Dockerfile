@@ -17,7 +17,7 @@ ENV CGO_ENABLED=0
 RUN apk --update add git g++ findutils \
     && go install github.com/golang/mock/mockgen@v1.6.0 \
     && go install github.com/golangci/golangci-lint@v1.64.8 \
-    && exit 0
+    && echo "initial setup done"
 COPY --from=xcputranslate /xcputranslate /usr/local/bin/xcputranslate
 # COPY --from=golangci-lint /bin /go/bin/golangci-lint
 # COPY --from=mockgen /bin /go/bin/mockgen
