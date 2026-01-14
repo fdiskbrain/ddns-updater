@@ -164,9 +164,7 @@ func (p *Provider) createCloudflareClient() (*cf.Client, error) {
 }
 
 // Obtain domain ID.
-func (p *Provider) getRecordID(ctx context.Context, cfClient *cf.Client, newIP netip.Addr) (
-	identifier string, upToDate bool, err error,
-) {
+func (p *Provider) getRecordID(ctx context.Context, cfClient *cf.Client, newIP netip.Addr) (identifier string, upToDate bool, err error) {
 	// 获取 DNS 记录列表
 	records, err := cfClient.DNS.Records.List(ctx, cfdns.RecordListParams{
 		ZoneID: cf.F(p.zoneIdentifier),
@@ -193,20 +191,23 @@ func (p *Provider) getRecordID(ctx context.Context, cfClient *cf.Client, newIP n
 
 func (p *Provider) createRecord(ctx context.Context, cfClinet *cf.Client, ip netip.Addr) (recordID string, err error) {
 	// 创建新的 DNS 记录
-	result, err := cfClinet.DNS.Records.New(ctx, cfdns.RecordNewParams{
-		ZoneID: cf.F(p.zoneIdentifier),
-		Body: cfdns.ARecordParam{
-			Name:    cf.F(p.BuildDomainName()),
-			Type:    cf.F(recordTypeForIP(ip)),
-			Content: cf.F(ip.String()),
-			TTL:     cf.F(cfdns.TTL(p.ttl)),
-			Proxied: cf.F(p.proxied),
-			// Settings: cf.F(cfdns.ARecordSettingsParam{
-			// 	IPV4Only: cf.F(p.ipVersion == ipversion.IP4),
-			// 	IPV6Only: cf.F(p.ipVersion == ipversion.IP6),
-			// }),
+	result, err := cfClinet.DNS.Records.New(
+		ctx,
+		cfdns.RecordNewParams{
+			ZoneID: cf.F(p.zoneIdentifier),
+			Body: cfdns.ARecordParam{
+				Name:    cf.F(p.BuildDomainName()),
+				Type:    cf.F(recordTypeForIP(ip)),
+				Content: cf.F(ip.String()),
+				TTL:     cf.F(cfdns.TTL(p.ttl)),
+				Proxied: cf.F(p.proxied),
+				// Settings: cf.F(cfdns.ARecordSettingsParam{
+				// 	IPV4Only: cf.F(p.ipVersion == ipversion.IP4),
+				// 	IPV6Only: cf.F(p.ipVersion == ipversion.IP6),
+				// }),
+			},
 		},
-	})
+	)
 	if err != nil {
 		return "", fmt.Errorf("error creating DNS record: %w", err)
 	}
@@ -231,16 +232,17 @@ func (p *Provider) Update(ctx context.Context, _ *http.Client, ip netip.Addr) (n
 		return ip, nil
 	}
 
-	_, err = cfClient.DNS.Records.Update(ctx, dnsRecordID, cfdns.RecordUpdateParams{
-		ZoneID: cf.F(p.zoneIdentifier),
-		Body: cfdns.ARecordParam{
-			Name:    cf.F(p.BuildDomainName()),
-			Type:    cf.F(recordTypeForIP(ip)),
-			Content: cf.F(ip.String()),
-			TTL:     cf.F(cfdns.TTL(p.ttl)),
-			Proxied: cf.F(p.proxied),
-		},
-	})
+	_, err = cfClient.DNS.Records.Update(ctx, dnsRecordID,
+		cfdns.RecordUpdateParams{
+			ZoneID: cf.F(p.zoneIdentifier),
+			Body: cfdns.ARecordParam{
+				Name:    cf.F(p.BuildDomainName()),
+				Type:    cf.F(recordTypeForIP(ip)),
+				Content: cf.F(ip.String()),
+				TTL:     cf.F(cfdns.TTL(p.ttl)),
+				Proxied: cf.F(p.proxied),
+			},
+		})
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("updating DNS record: %w", err)
 	}
