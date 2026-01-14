@@ -1,3 +1,4 @@
+// Package config handles the application settings.
 package config
 
 import (

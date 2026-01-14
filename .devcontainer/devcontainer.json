@@ -6,7 +6,7 @@
     },
     // Fixed settings
     "name": "ddns-dev",
-    "postCreateCommand": "~/.windows.sh && go mod download && go mod tidy",
+    // "postCreateCommand": "~/.windows.sh && go mod download && go mod tidy",
     "dockerComposeFile": "docker-compose.yml",
     "overrideCommand": true,
     "service": "vscode",

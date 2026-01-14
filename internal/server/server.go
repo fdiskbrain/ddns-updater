@@ -1,3 +1,4 @@
+// Package server provides the HTTP server for the application.
 package server
 
 import (

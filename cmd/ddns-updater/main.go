@@ -153,6 +153,9 @@ func _main(ctx context.Context, reader *reader.Reader, args []string, logger log
 
 	jsonReader := jsonparams.NewReader(logger)
 	providers, warnings, err := jsonReader.JSONProviders(*config.Paths.Config)
+	for _, p := range providers {
+		logger.Info("Loaded provider " + p.String() + " with domain " + p.BuildDomainName())
+	}
 	for _, w := range warnings {
 		logger.Warn(w)
 		shoutrrrClient.Notify(w)

@@ -1,21 +1,21 @@
+// Package cloudflare implements a Cloudflare DDNS provider.
 package cloudflare
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"regexp"
-	"strings"
 
+	cf "github.com/cloudflare/cloudflare-go/v6"
+	cfdns "github.com/cloudflare/cloudflare-go/v6/dns"
+	"github.com/cloudflare/cloudflare-go/v6/option"
 	"github.com/qdm12/ddns-updater/internal/models"
 	"github.com/qdm12/ddns-updater/internal/provider/constants"
 	"github.com/qdm12/ddns-updater/internal/provider/errors"
-	"github.com/qdm12/ddns-updater/internal/provider/headers"
 	"github.com/qdm12/ddns-updater/internal/provider/utils"
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 )
@@ -148,182 +148,80 @@ func (p *Provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *Provider) setHeaders(request *http.Request) {
-	headers.SetUserAgent(request)
-	headers.SetContentType(request, "application/json")
-	headers.SetAccept(request, "application/json")
-	switch {
-	case p.token != "":
-		headers.SetAuthBearer(request, p.token)
-	case p.userServiceKey != "":
-		request.Header.Set("X-Auth-User-Service-Key", p.userServiceKey)
-	case p.email != "" && p.key != "":
-		request.Header.Set("X-Auth-Email", p.email)
-		request.Header.Set("X-Auth-Key", p.key)
+// createCloudflareClient 创建Cloudflare API客户端.
+func (p *Provider) createCloudflareClient() (*cf.Client, error) {
+	if p.token != "" {
+		// 使用 API token
+		return cf.NewClient(option.WithAPIToken(p.token)), nil
+	} else if p.email != "" && p.key != "" {
+		// 使用 email + API key
+		return cf.NewClient(option.WithAPIKey(p.key), option.WithAPIEmail(p.email)), nil
+	} else if p.userServiceKey != "" {
+		// 使用 user service key
+		return cf.NewClient(option.WithAPIKey(p.userServiceKey)), nil
 	}
+	return nil, fmt.Errorf("no authentication method available")
 }
 
 // Obtain domain ID.
-// See https://api.cloudflare.com/#dns-records-for-a-zone-list-dns-records.
-func (p *Provider) getRecordID(ctx context.Context, client *http.Client, newIP netip.Addr) (
+func (p *Provider) getRecordID(ctx context.Context, cfClient *cf.Client, newIP netip.Addr) (
 	identifier string, upToDate bool, err error,
 ) {
-	recordType := constants.A
-	if newIP.Is6() {
-		recordType = constants.AAAA
-	}
-
-	u := url.URL{
-		Scheme: "https",
-		Host:   "api.cloudflare.com",
-		Path:   fmt.Sprintf("/client/v4/zones/%s/dns_records", p.zoneIdentifier),
-	}
-
-	values := url.Values{}
-	values.Set("type", recordType)
-	values.Set("name", utils.BuildURLQueryHostname(p.owner, p.domain))
-	values.Set("page", "1")
-	values.Set("per_page", "1")
-	u.RawQuery = values.Encode()
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	// 获取 DNS 记录列表
+	records, err := cfClient.DNS.Records.List(ctx, cfdns.RecordListParams{
+		ZoneID: cf.F(p.zoneIdentifier),
+		Type:   cf.F(cfdns.RecordListParamsType(recordTypeForIP(newIP))),
+		Name: cf.F(cfdns.RecordListParamsName{
+			Exact: cf.F(p.BuildDomainName()),
+		}),
+	})
 	if err != nil {
-		return "", false, fmt.Errorf("creating http request: %w", err)
-	}
-	p.setHeaders(request)
-
-	response, err := client.Do(request)
-	if err != nil {
-		return "", false, err
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return "", false, fmt.Errorf("%w: %d: %s",
-			errors.ErrHTTPStatusNotValid, response.StatusCode, utils.BodyToSingleLine(response.Body))
-	}
-
-	decoder := json.NewDecoder(response.Body)
-	listRecordsResponse := struct {
-		Success bool     `json:"success"`
-		Errors  []string `json:"errors"`
-		Result  []struct {
-			ID      string `json:"id"`
-			Content string `json:"content"`
-		} `json:"result"`
-	}{}
-	err = decoder.Decode(&listRecordsResponse)
-	if err != nil {
-		return "", false, fmt.Errorf("json decoding response body: %w", err)
+		return "", false, fmt.Errorf("error listing DNS records: %w", err)
 	}
 
 	switch {
-	case len(listRecordsResponse.Errors) > 0:
-		return "", false, fmt.Errorf("%w: %s",
-			errors.ErrUnsuccessful, strings.Join(listRecordsResponse.Errors, ","))
-	case !listRecordsResponse.Success:
-		return "", false, fmt.Errorf("%w", errors.ErrUnsuccessful)
-	case len(listRecordsResponse.Result) == 0:
+	case len(records.Result) == 0:
 		return "", false, fmt.Errorf("%w", errors.ErrReceivedNoResult)
-	case len(listRecordsResponse.Result) > 1:
+	case len(records.Result) > 1:
 		return "", false, fmt.Errorf("%w: %d instead of 1",
-			errors.ErrResultsCountReceived, len(listRecordsResponse.Result))
-	case listRecordsResponse.Result[0].Content == newIP.String(): // up to date
-		return "", true, nil
+			errors.ErrResultsCountReceived, len(records.Result))
+	case records.Result[0].Content == newIP.String(): // up to date
+		return records.Result[0].ID, true, nil
 	}
-	return listRecordsResponse.Result[0].ID, false, nil
+	return records.Result[0].ID, false, nil
 }
 
-func (p *Provider) createRecord(ctx context.Context, client *http.Client, ip netip.Addr) (recordID string, err error) {
-	recordType := constants.A
-
-	if ip.Is6() {
-		recordType = constants.AAAA
-	}
-
-	u := url.URL{
-		Scheme: "https",
-		Host:   "api.cloudflare.com",
-		Path:   fmt.Sprintf("/client/v4/zones/%s/dns_records", p.zoneIdentifier),
-	}
-
-	requestData := struct {
-		Type    string `json:"type"`    // constants.A or constants.AAAA depending on ip address given
-		Name    string `json:"name"`    // DNS record name i.e. example.com
-		Content string `json:"content"` // ip address
-		Proxied bool   `json:"proxied"` // whether the record is receiving the performance and security benefits of Cloudflare
-		TTL     uint32 `json:"ttl"`
-	}{
-		Type:    recordType,
-		Name:    utils.BuildURLQueryHostname(p.owner, p.domain),
-		Content: ip.String(),
-		Proxied: p.proxied,
-		TTL:     p.ttl,
-	}
-
-	buffer := bytes.NewBuffer(nil)
-	encoder := json.NewEncoder(buffer)
-	err = encoder.Encode(requestData)
+func (p *Provider) createRecord(ctx context.Context, cfClinet *cf.Client, ip netip.Addr) (recordID string, err error) {
+	// 创建新的 DNS 记录
+	result, err := cfClinet.DNS.Records.New(ctx, cfdns.RecordNewParams{
+		ZoneID: cf.F(p.zoneIdentifier),
+		Body: cfdns.ARecordParam{
+			Name:    cf.F(p.BuildDomainName()),
+			Type:    cf.F(recordTypeForIP(ip)),
+			Content: cf.F(ip.String()),
+			TTL:     cf.F(cfdns.TTL(p.ttl)),
+			Proxied: cf.F(p.proxied),
+			// Settings: cf.F(cfdns.ARecordSettingsParam{
+			// 	IPV4Only: cf.F(p.ipVersion == ipversion.IP4),
+			// 	IPV6Only: cf.F(p.ipVersion == ipversion.IP6),
+			// }),
+		},
+	})
 	if err != nil {
-		return "", fmt.Errorf("JSON encoding request data: %w", err)
+		return "", fmt.Errorf("error creating DNS record: %w", err)
 	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), buffer)
-	if err != nil {
-		return "", fmt.Errorf("creating http request: %w", err)
-	}
-
-	p.setHeaders(request)
-
-	response, err := client.Do(request)
-	if err != nil {
-		return "", err
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode > http.StatusUnsupportedMediaType {
-		return "", fmt.Errorf("%w: %d: %s",
-			errors.ErrHTTPStatusNotValid, response.StatusCode, utils.BodyToSingleLine(response.Body))
-	}
-
-	decoder := json.NewDecoder(response.Body)
-	var parsedJSON struct {
-		Success bool `json:"success"`
-		Errors  []struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"errors"`
-		Result struct {
-			ID string `json:"id"`
-		} `json:"result"`
-	}
-	err = decoder.Decode(&parsedJSON)
-	if err != nil {
-		return "", fmt.Errorf("json decoding response body: %w", err)
-	}
-
-	if !parsedJSON.Success {
-		var errStr string
-		for _, e := range parsedJSON.Errors {
-			errStr += fmt.Sprintf("error %d: %s; ", e.Code, e.Message)
-		}
-		return "", fmt.Errorf("%w: %s", errors.ErrUnsuccessful, errStr)
-	}
-
-	return parsedJSON.Result.ID, nil
+	return result.ID, nil
 }
 
-func (p *Provider) Update(ctx context.Context, client *http.Client, ip netip.Addr) (newIP netip.Addr, err error) {
-	recordType := constants.A
-	if ip.Is6() {
-		recordType = constants.AAAA
+func (p *Provider) Update(ctx context.Context, _ *http.Client, ip netip.Addr) (newIP netip.Addr, err error) {
+	cfClient, err := p.createCloudflareClient()
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("failed to create cloudflare client: %w", err)
 	}
-
-	identifier, upToDate, err := p.getRecordID(ctx, client, ip)
-
+	dnsRecordID, upToDate, err := p.getRecordID(ctx, cfClient, ip)
 	switch {
 	case stderrors.Is(err, errors.ErrReceivedNoResult):
-		identifier, err = p.createRecord(ctx, client, ip)
+		dnsRecordID, err = p.createRecord(ctx, cfClient, ip)
 		if err != nil {
 			return netip.Addr{}, fmt.Errorf("creating record: %w", err)
 		}
@@ -333,81 +231,26 @@ func (p *Provider) Update(ctx context.Context, client *http.Client, ip netip.Add
 		return ip, nil
 	}
 
-	u := url.URL{
-		Scheme: "https",
-		Host:   "api.cloudflare.com",
-		Path:   fmt.Sprintf("/client/v4/zones/%s/dns_records/%s", p.zoneIdentifier, identifier),
-	}
-
-	requestData := struct {
-		Type    string `json:"type"`    // constants.A or constants.AAAA depending on ip address given
-		Name    string `json:"name"`    // DNS record name i.e. example.com
-		Content string `json:"content"` // ip address
-		Proxied bool   `json:"proxied"` // whether the record is receiving the performance and security benefits of Cloudflare
-		TTL     uint32 `json:"ttl"`
-	}{
-		Type:    recordType,
-		Name:    utils.BuildURLQueryHostname(p.owner, p.domain),
-		Content: ip.String(),
-		Proxied: p.proxied,
-		TTL:     p.ttl,
-	}
-
-	buffer := bytes.NewBuffer(nil)
-	encoder := json.NewEncoder(buffer)
-	err = encoder.Encode(requestData)
+	_, err = cfClient.DNS.Records.Update(ctx, dnsRecordID, cfdns.RecordUpdateParams{
+		ZoneID: cf.F(p.zoneIdentifier),
+		Body: cfdns.ARecordParam{
+			Name:    cf.F(p.BuildDomainName()),
+			Type:    cf.F(recordTypeForIP(ip)),
+			Content: cf.F(ip.String()),
+			TTL:     cf.F(cfdns.TTL(p.ttl)),
+			Proxied: cf.F(p.proxied),
+		},
+	})
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("json encoding request data: %w", err)
+		return netip.Addr{}, fmt.Errorf("updating DNS record: %w", err)
 	}
+	return ip, nil
+}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), buffer)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("creating http request: %w", err)
+func recordTypeForIP(ip netip.Addr) cfdns.ARecordType {
+	recordType := cfdns.ARecordTypeA
+	if ip.Is6() {
+		recordType = cfdns.ARecordType(cfdns.AAAARecordTypeAAAA)
 	}
-
-	p.setHeaders(request)
-
-	response, err := client.Do(request)
-	if err != nil {
-		return netip.Addr{}, err
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode > http.StatusUnsupportedMediaType {
-		return netip.Addr{}, fmt.Errorf("%w: %d: %s",
-			errors.ErrHTTPStatusNotValid, response.StatusCode, utils.BodyToSingleLine(response.Body))
-	}
-
-	decoder := json.NewDecoder(response.Body)
-	var parsedJSON struct {
-		Success bool `json:"success"`
-		Errors  []struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"errors"`
-		Result struct {
-			Content string `json:"content"`
-		} `json:"result"`
-	}
-	err = decoder.Decode(&parsedJSON)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("json decoding response body: %w", err)
-	}
-
-	if !parsedJSON.Success {
-		var errStr string
-		for _, e := range parsedJSON.Errors {
-			errStr += fmt.Sprintf("error %d: %s; ", e.Code, e.Message)
-		}
-		return netip.Addr{}, fmt.Errorf("%w: %s", errors.ErrUnsuccessful, errStr)
-	}
-
-	newIP, err = netip.ParseAddr(parsedJSON.Result.Content)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("%w: %w", errors.ErrIPReceivedMalformed, err)
-	} else if newIP.Compare(ip) != 0 {
-		return netip.Addr{}, fmt.Errorf("%w: sent ip %s to update but received %s",
-			errors.ErrIPReceivedMismatch, ip, newIP)
-	}
-	return newIP, nil
+	return recordType
 }

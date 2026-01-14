@@ -4,7 +4,7 @@ import (
 	"net/netip"
 )
 
-// HTMLData is a list of HTML fields to be rendered.
+// Stats is a list of stat rows to be rendered.
 // It is exported so that the HTML template engine can render it.
 type Stats struct {
 	Stats []Stat `json:"rows"`
