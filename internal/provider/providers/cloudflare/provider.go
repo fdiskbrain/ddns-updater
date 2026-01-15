@@ -149,22 +149,24 @@ func (p *Provider) HTML() models.HTMLRow {
 }
 
 // createCloudflareClient 创建Cloudflare API客户端.
-func (p *Provider) createCloudflareClient() (*cf.Client, error) {
+func (p *Provider) createCloudflareClient() *cf.Client {
 	if p.token != "" {
 		// 使用 API token
-		return cf.NewClient(option.WithAPIToken(p.token)), nil
+		return cf.NewClient(option.WithAPIToken(p.token))
 	} else if p.email != "" && p.key != "" {
 		// 使用 email + API key
-		return cf.NewClient(option.WithAPIKey(p.key), option.WithAPIEmail(p.email)), nil
+		return cf.NewClient(option.WithAPIKey(p.key), option.WithAPIEmail(p.email))
 	} else if p.userServiceKey != "" {
 		// 使用 user service key
-		return cf.NewClient(option.WithAPIKey(p.userServiceKey)), nil
+		return cf.NewClient(option.WithAPIKey(p.userServiceKey))
 	}
-	return nil, fmt.Errorf("no authentication method available")
+	return cf.NewClient() // Get from cloudflare environments
 }
 
 // Obtain domain ID.
-func (p *Provider) getRecordID(ctx context.Context, cfClient *cf.Client, newIP netip.Addr) (identifier string, upToDate bool, err error) {
+func (p *Provider) getRecordID(ctx context.Context, cfClient *cf.Client, newIP netip.Addr) (
+	identifier string, upToDate bool, err error,
+) {
 	// 获取 DNS 记录列表
 	records, err := cfClient.DNS.Records.List(ctx, cfdns.RecordListParams{
 		ZoneID: cf.F(p.zoneIdentifier),
@@ -201,10 +203,6 @@ func (p *Provider) createRecord(ctx context.Context, cfClinet *cf.Client, ip net
 				Content: cf.F(ip.String()),
 				TTL:     cf.F(cfdns.TTL(p.ttl)),
 				Proxied: cf.F(p.proxied),
-				// Settings: cf.F(cfdns.ARecordSettingsParam{
-				// 	IPV4Only: cf.F(p.ipVersion == ipversion.IP4),
-				// 	IPV6Only: cf.F(p.ipVersion == ipversion.IP6),
-				// }),
 			},
 		},
 	)
@@ -215,10 +213,7 @@ func (p *Provider) createRecord(ctx context.Context, cfClinet *cf.Client, ip net
 }
 
 func (p *Provider) Update(ctx context.Context, _ *http.Client, ip netip.Addr) (newIP netip.Addr, err error) {
-	cfClient, err := p.createCloudflareClient()
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("failed to create cloudflare client: %w", err)
-	}
+	cfClient := p.createCloudflareClient()
 	dnsRecordID, upToDate, err := p.getRecordID(ctx, cfClient, ip)
 	switch {
 	case stderrors.Is(err, errors.ErrReceivedNoResult):
