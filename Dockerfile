@@ -9,7 +9,7 @@ FROM --platform=${BUILDPLATFORM} qmcgaw/xcputranslate:${XCPUTRANSLATE_VERSION} A
 # FROM --platform=${BUILDPLATFORM} golangci/golangci-lint:${GOLANGCI_LINT_VERSION}-apline AS golangci-lint
 # FROM --platform=${BUILDPLATFORM} qmcgaw/binpot:mockgen-${MOCKGEN_VERSION} AS mockgen
 
-FROM public.ecr.aws/docker/library/golang:1.24-alpine3.23 AS base
+FROM public.ecr.aws/docker/library/golang:1.26-alpine3.23 AS base
 # FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS base
 WORKDIR /tmp/gobuild
 ENV CGO_ENABLED=0
